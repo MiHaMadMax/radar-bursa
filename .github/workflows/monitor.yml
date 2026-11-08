@@ -1,0 +1,39 @@
+name: Radar Bursa live
+
+on:
+  schedule:
+    - cron: "*/10 7-21 * * 1-5"   # la fiecare 10 minute, luni-vineri, 09:00-23:59 ora României
+  workflow_dispatch:
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  verificare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Încarcă memoria alertelor (ca să nu primești aceeași alertă de 2 ori)
+        uses: actions/cache/restore@v4
+        with:
+          path: stare_alerte.json
+          key: stare-${{ github.run_id }}
+          restore-keys: stare-
+      - name: Verifică piața
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot_bursa.py --monitor
+      - name: Salvează memoria alertelor
+        if: always() && hashFiles('stare_alerte.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: stare_alerte.json
+          key: stare-${{ github.run_id }}

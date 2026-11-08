@@ -26,6 +26,16 @@ UNIVERS = {
     "România":["TLV.RO","SNP.RO","H2O.RO","SNG.RO","BRD.RO","TGN.RO"],
 }
 
+NUME = {"AAPL":"Apple","MSFT":"Microsoft","NVDA":"NVIDIA","GOOGL":"Google","AMZN":"Amazon","META":"Meta",
+    "AVGO":"Broadcom","JPM":"JPMorgan","V":"Visa","MA":"Mastercard","LLY":"Eli Lilly","UNH":"UnitedHealth",
+    "JNJ":"Johnson & Johnson","XOM":"ExxonMobil","COST":"Costco","WMT":"Walmart","PG":"Procter & Gamble",
+    "HD":"Home Depot","NFLX":"Netflix","AMD":"AMD","ASML.AS":"ASML","SAP.DE":"SAP","NOVO-B.CO":"Novo Nordisk",
+    "MC.PA":"LVMH","SIE.DE":"Siemens","NESN.SW":"Nestlé","AZN.L":"AstraZeneca","SHEL.L":"Shell",
+    "TTE.PA":"TotalEnergies","ALV.DE":"Allianz","OR.PA":"L'Oréal","TSM":"TSMC","7203.T":"Toyota",
+    "6758.T":"Sony","BABA":"Alibaba","0700.HK":"Tencent","005930.KS":"Samsung","INFY":"Infosys",
+    "TLV.RO":"Banca Transilvania","SNP.RO":"OMV Petrom","H2O.RO":"Hidroelectrica","SNG.RO":"Romgaz",
+    "BRD.RO":"BRD","TGN.RO":"Transgaz"}
+
 def rsi(close, n=14):
     d = close.diff()
     up = d.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
@@ -233,8 +243,19 @@ def trimite_telegram(df, prag_alerta=0.04):
     if site:
         txt += ["", f"🔗 Raportul complet: {site}"]
     txt += ["", "_Nu este sfat financiar._"]
-    date = urllib.parse.urlencode({"chat_id": chat, "text": "\n".join(txt),
-                                   "parse_mode": "Markdown", "disable_web_page_preview": "true"}).encode()
+    trimite_text("\n".join(txt))
+
+
+def trimite_text(text):
+    token = (os.environ.get("TELEGRAM_TOKEN") or "").strip()
+    chat = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+    if not token or not chat:
+        print("Telegram: lipsesc TELEGRAM_TOKEN / TELEGRAM_CHAT_ID, nu trimit nimic.")
+        print(text)
+        return
+    txt = text.split("\n")
+    date = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "Markdown",
+                                   "disable_web_page_preview": "true"}).encode()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         urllib.request.urlopen(url, date, timeout=20)
@@ -247,6 +268,81 @@ def trimite_telegram(df, prag_alerta=0.04):
         except Exception as e:
             print("Telegram: eroare la trimitere:", e)
 
+# ---------------- MONITORIZARE LIVE (rulează la fiecare 10 minute) ----------------
+INDICI = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^GDAXI": "DAX (Germania)", "^STOXX50E": "Euro Stoxx 50"}
+PRAGURI_ACTIUNI = [3, 5, 8, 12]      # % față de închiderea de ieri
+PRAGURI_INDICI = [1.5, 2.5, 4]
+SALT_BRUSC = 2.0                     # % în ultimele ~30 de minute
+PAUZA_SALT_MIN = 60                  # nu repeta alerta de salt brusc mai des de atât
+
+def monitor(fisier_stare="stare_alerte.json"):
+    import datetime as dt
+    import yfinance as yf
+    acum = dt.datetime.now(dt.timezone.utc)
+    azi = acum.strftime("%Y-%m-%d")
+    try:
+        stare = json.load(open(fisier_stare))
+    except Exception:
+        stare = {}
+    if stare.get("zi") != azi:
+        stare = {"zi": azi, "nivele": {}, "salturi": {}}
+
+    nume = {t: t for l in UNIVERS.values() for t in l}
+    nume.update(INDICI)
+    toate = list(nume)
+    px = yf.download(toate, period="2d", interval="5m", auto_adjust=True,
+                     progress=False, threads=True)["Close"]
+    alerte = []
+    for t in toate:
+        if t not in px:
+            continue
+        serie = px[t].dropna()
+        if len(serie) < 7:
+            continue
+        ultim_ts = serie.index[-1].to_pydatetime()
+        if (acum - ultim_ts).total_seconds() > 45 * 60:
+            continue  # bursa acestei acțiuni e închisă acum -> nu alertăm date vechi
+        zile = serie.index.date
+        ieri = serie[zile < zile[-1]]
+        if ieri.empty:
+            continue
+        inchidere_ieri, pret = ieri.iloc[-1], serie.iloc[-1]
+        var_zi = (pret / inchidere_ieri - 1) * 100
+        e_indice = t in INDICI
+        praguri = PRAGURI_INDICI if e_indice else PRAGURI_ACTIUNI
+        eticheta = f"*{INDICI[t]}*" if e_indice else f"*{NUME.get(t, t)}* ({t})"
+
+        # a) a trecut un prag nou azi (ex. -3%, apoi -5%)
+        atins = [p for p in praguri if abs(var_zi) >= p]
+        if atins:
+            nivel = max(atins) * (1 if var_zi > 0 else -1)
+            vechi = stare["nivele"].get(t, 0)
+            if abs(nivel) > abs(vechi) or (nivel * vechi < 0):
+                stare["nivele"][t] = nivel
+                semn = "🚀" if var_zi > 0 else "🔻"
+                alerte.append(f"{semn} {eticheta} {var_zi:+.1f}% azi (preț {pret:,.2f})")
+
+        # b) salt brusc în ultimele ~30 de minute
+        fereastra = serie[serie.index >= serie.index[-1] - dt.timedelta(minutes=30)]
+        if len(fereastra) >= 3:
+            var_30 = (pret / fereastra.iloc[0] - 1) * 100
+            prag_salt = SALT_BRUSC * (0.5 if e_indice else 1)
+            ultima = stare["salturi"].get(t)
+            liber = not ultima or (acum - dt.datetime.fromisoformat(ultima)).total_seconds() > PAUZA_SALT_MIN * 60
+            if abs(var_30) >= prag_salt and liber:
+                stare["salturi"][t] = acum.isoformat()
+                semn = "⚡📈" if var_30 > 0 else "⚡📉"
+                alerte.append(f"{semn} {eticheta} mișcare bruscă {var_30:+.1f}% în ultimele 30 min")
+
+    json.dump(stare, open(fisier_stare, "w"))
+    if alerte:
+        ora = acum.astimezone(__import__("zoneinfo").ZoneInfo("Europe/Bucharest")).strftime("%H:%M")
+        trimite_text(f"🔔 *Alertă bursă — {ora}*\n\n" + "\n".join(alerte) +
+                     "\n\n_Prețuri cu ~15 min întârziere. Nu este sfat financiar._")
+        print(f"Monitor: {len(alerte)} alerte trimise.")
+    else:
+        print("Monitor: nimic important în acest moment.")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=10)
@@ -255,7 +351,10 @@ def main():
     ap.add_argument("--fara-browser", action="store_true", help="nu deschide raportul în browser")
     ap.add_argument("--iesire", default="raport_bursa.html", help="unde se salvează raportul HTML")
     ap.add_argument("--telegram", action="store_true", help="trimite rezumatul pe Telegram")
+    ap.add_argument("--monitor", action="store_true", help="verificare rapidă + alerte (pentru rulare la 10 min)")
     a = ap.parse_args()
+    if a.monitor:
+        return monitor()
 
     regiune = {t: reg for reg, l in UNIVERS.items() for t in l}
     linii, grafice = [], {}

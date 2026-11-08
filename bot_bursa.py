@@ -22,7 +22,7 @@ UNIVERS = {
                "LLY","UNH","JNJ","XOM","COST","WMT","PG","HD","NFLX","AMD"],
     "Europa": ["ASML.AS","SAP.DE","NOVO-B.CO","MC.PA","SIE.DE","NESN.SW",
                "AZN.L","SHEL.L","TTE.PA","ALV.DE","OR.PA"],
-    "Asia":   ["TSM","7203.T","6758.T","BABA","0700.HK","005930.KS","INFY","SONY"],
+    "Asia":   ["TSM","7203.T","6758.T","BABA","0700.HK","005930.KS","INFY"],
     "România":["TLV.RO","SNP.RO","H2O.RO","SNG.RO","BRD.RO","TGN.RO"],
 }
 
@@ -153,7 +153,12 @@ def raport_html(df, grafice, top, demo, iesire="raport_bursa.html"):
         f"<td>{r['Regiune']}</td><td><span class='pill {culoare(r['Scor'])}'>{r['Scor']:.0f}</span></td>"
         f"<td>{r['6 luni']}</td><td>{r['RSI']}</td><td>{r['Volat.']}</td></tr>"
         for p, r in df.iterrows())
-    data = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M")
+    try:
+        from zoneinfo import ZoneInfo
+        acum = datetime.datetime.now(ZoneInfo("Europe/Bucharest"))
+    except Exception:
+        acum = datetime.datetime.now()
+    data = acum.strftime("%d.%m.%Y, %H:%M") + " (ora României)"
     pagina = f"""<!doctype html><html lang="ro"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Radar Bursă</title>
 <style>
@@ -208,7 +213,8 @@ footer{{color:var(--mut);font-size:13px;margin-top:28px;text-align:center}}
     return cale
 
 def trimite_telegram(df, prag_alerta=0.04):
-    token, chat = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    token = (os.environ.get("TELEGRAM_TOKEN") or "").strip()
+    chat = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
     if not token or not chat:
         print("Telegram: lipsesc TELEGRAM_TOKEN / TELEGRAM_CHAT_ID, nu trimit nimic.")
         return

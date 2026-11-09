@@ -2,7 +2,7 @@ name: Radar Bursa zilnic
 
 on:
   schedule:
-    - cron: "0 6 * * 1-5"   # luni-vineri la 06:00 UTC (08:00 ora României)
+      - cron: "17 5 * * 1-5"   # luni-vineri la 05:17 UTC (07:17 ora României, iarna)
   workflow_dispatch:         # buton "Run workflow" pentru rulare manuală
 
 permissions:
